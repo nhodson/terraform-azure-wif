@@ -1,93 +1,56 @@
 # Terraform Azure WIF
+Implementation of [Workload Identity Federation with Azure](https://cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds#azure)
 
+## Configuration
 
+Before running `terraform apply`, you need to set some required variables. The recommended approach is to create a `terraform.tfvars` file in the root of this project.
 
-## Getting started
+### Required Variables
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+*   `tenant_id`: The tenant ID for your Azure AD (Entra ID).
+*   `subscription_id`: The subscription ID where Azure resources will be created.
+*   `org_id`: The GCP Organization ID where projects will be created.
+*   `billing_account_id`: The GCP Billing Account to attach to the projects.
+*   `project_prefix`: Unique prefix to apply to created GCP projects
+*   `terraform_service_account`: Terraform service account used for impersonation
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Create a `terraform.tfvars` file with the following content, replacing the placeholder values:
 
-## Add your files
-
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```hcl
+tenant_id                 = "YOUR_AZURE_TENANT_ID"
+subscription_id           = "YOUR_AZURE_SUBSCRIPTION_ID"
+org_id                    = "YOUR_GCP_ORG_ID"
+billing_account_id        = "YOUR_GCP_BILLING_ID"
+project_prefix            = "YOUR_GCP_PROJECT_PREFIX"
+terraform_service_account = "YOUR_TERRAFORM_SERVICE_ACCOUNT"
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/google-cloud-ce/googlers/hodsonn/terraform-azure-wif.git
-git branch -M main
-git push -uf origin main
-```
 
-## Integrate with your tools
+Alternatively, you can provide variables using environment variables prefixed with `TF_VAR_`. For example: `export TF_VAR_azure_tenant_id="YOUR_AZURE_TENANT_ID"`.
 
-- [ ] [Set up project integrations](https://gitlab.com/google-cloud-ce/googlers/hodsonn/terraform-azure-wif/-/settings/integrations)
+## Apply Terraform
+The Terraform configuration creates:
+- Dedicated GCP project for the workload identity pool
+- GCP project for accessing Gemini via Vertex AI
+- Entra ID application and service principal
+- Workload identity pool and provider
 
-## Collaborate with your team
+1. Initialize Terraform:
+    ```
+    terraform init
+    ```
+    This command prepares your working directory for Terraform by downloading the necessary providers and modules.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+2. Apply the Terraform configuration:
+    ```
+    terraform apply
+    ```
+    This command creates or updates resources according to your Terraform configuration. You will be prompted to confirm the actions before they are executed.
 
-## Test and Deploy
+## Using with Azure App Service
+The Terraform deploys an Azure App Service application that demonstrates how to call Vertex AI using the Google Gen AI SDK with credentials obtained through workload identity federation.
 
-Use the built-in continuous integration in GitLab.
+**NOTE:** When running on Azure App Service your credential config will differ as it must dynamically obtain the identity URL from [environment variables](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity?tabs=portal%2Cpython#rest-endpoint-reference) for `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`.
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Additionally, the sample application in `gemini-streamlit-app` configures the Google Gen AI SDK using environment variables for `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`.
 
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+The Terraform output includes the URL of the Azure Service App to validate functionality.

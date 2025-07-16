@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+cat <<EOF > gcp-cred-config.json
+{
+  "universe_domain": "googleapis.com",
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/${pool_name}/providers/${provider_id}",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+  "credential_source": {
+    "url": "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=${application_id}",
+    "headers": {
+      "Metadata": "True",
+      "X-IDENTITY-HEADER": "$IDENTITY_HEADER"
+    },
+    "format": {
+      "type": "json",
+      "subject_token_field_name": "access_token"
+    }
+  },
+  "token_info_url": "https://sts.googleapis.com/v1/introspect"
+}
+EOF
+
+pip install -r requirements.txt
+python -m streamlit run app.py --server.port 8000 --server.address 0.0.0.0
