@@ -3,6 +3,11 @@ output "gemini_project_id" {
   value       = module.gemini_project.project_id
 }
 
+output "wip_project_number" {
+  description = "The number of the Workload Identity Pool project"
+  value       = module.wip_project.project_number
+}
+
 output "pool_id" {
   description = "The ID of the Workload Identity Pool"
   value       = google_iam_workload_identity_pool.azure.workload_identity_pool_id
