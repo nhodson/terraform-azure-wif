@@ -1,6 +1,9 @@
 # Terraform Azure Workload Identity Federation
 Implementation of [Workload Identity Federation with Azure](https://cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds#azure)
 
+## Architecture
+![Architecture diagram](./docs/architecture.png)
+
 ## Configuration
 
 Before running `terraform apply`, you need to set some required variables. The recommended approach is to create a `terraform.tfvars` file in the root of this project.
