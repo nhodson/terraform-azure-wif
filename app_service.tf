@@ -15,6 +15,7 @@
 
 # Create a random string for unique naming
 resource "random_string" "app_name_suffix" {
+  count   = var.deploy_app_service ? 1 : 0
   length  = 8
   special = false
   upper   = false
@@ -22,15 +23,17 @@ resource "random_string" "app_name_suffix" {
 
 # Create a resource group for the App Service
 resource "azurerm_resource_group" "app_service" {
+  count    = var.deploy_app_service ? 1 : 0
   name     = "${var.project_prefix}-app-service-rg"
   location = var.location
 }
 
 # Create an App Service Plan
 resource "azurerm_service_plan" "app_service" {
+  count               = var.deploy_app_service ? 1 : 0
   name                = "${var.project_prefix}-asp"
-  location            = azurerm_resource_group.app_service.location
-  resource_group_name = azurerm_resource_group.app_service.name
+  location            = azurerm_resource_group.app_service[0].location
+  resource_group_name = azurerm_resource_group.app_service[0].name
   os_type             = "Linux"
   sku_name            = "F1"
 }
@@ -38,6 +41,7 @@ resource "azurerm_service_plan" "app_service" {
 # Create the run.sh file from the template
 # This allows us to interpolate the IDENTITY_ENDPOINT and IDENTITY_HEADER environment variables on startup
 resource "local_file" "run_sh" {
+  count = var.deploy_app_service ? 1 : 0
   content = templatefile("${path.module}/templates/run.sh.tftpl", {
     pool_name      = google_iam_workload_identity_pool.azure.name
     provider_id    = google_iam_workload_identity_pool_provider.azure.workload_identity_pool_provider_id
@@ -49,6 +53,7 @@ resource "local_file" "run_sh" {
 
 # Package the app directory
 data "archive_file" "app" {
+  count       = var.deploy_app_service ? 1 : 0
   type        = "zip"
   source_dir  = "${path.module}/gemini-streamlit-app"
   output_path = "${path.module}/gemini-streamlit-app.zip"
@@ -63,10 +68,11 @@ data "archive_file" "app" {
 
 # Create a Linux Web App
 resource "azurerm_linux_web_app" "app_service" {
-  name                = "${var.app_name}-${random_string.app_name_suffix.result}"
-  location            = azurerm_resource_group.app_service.location
-  resource_group_name = azurerm_resource_group.app_service.name
-  service_plan_id     = azurerm_service_plan.app_service.id
+  count               = var.deploy_app_service ? 1 : 0
+  name                = "${var.app_name}-${random_string.app_name_suffix[0].result}"
+  location            = azurerm_resource_group.app_service[0].location
+  resource_group_name = azurerm_resource_group.app_service[0].name
+  service_plan_id     = azurerm_service_plan.app_service[0].id
   https_only          = true
 
   site_config {
@@ -85,7 +91,7 @@ resource "azurerm_linux_web_app" "app_service" {
     "GOOGLE_CLOUD_LOCATION"               = "global"
   }
 
-  zip_deploy_file = data.archive_file.app.output_path
+  zip_deploy_file = data.archive_file.app[0].output_path
 
   identity {
     type = "SystemAssigned"
@@ -110,10 +116,10 @@ resource "azurerm_linux_web_app" "app_service" {
 
 # Google Cloud IAM permission for managed identity of the App Service to call Gemini via Vertex AI
 resource "google_project_iam_member" "app_service_principal" {
-  for_each = toset([
+  for_each = toset(var.deploy_app_service ? [
     "roles/aiplatform.user"
-  ])
+  ] : [])
   project = module.gemini_project.project_id
   role    = each.key
-  member  = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.azure.name}/subject/${azurerm_linux_web_app.app_service.identity[0].principal_id}"
+  member  = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.azure.name}/subject/${azurerm_linux_web_app.app_service[0].identity[0].principal_id}"
 }

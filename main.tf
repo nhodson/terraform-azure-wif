@@ -40,7 +40,6 @@ module "wip_project" {
   billing_account   = var.billing_account_id
 
   activate_apis = [
-    "aiplatform.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",

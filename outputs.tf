@@ -39,5 +39,5 @@ output "application_id_uri" {
 
 output "service_app_url" {
   description = "The URL of the Streamlit Gemini Service App"
-  value       = "https://${azurerm_linux_web_app.app_service.name}.azurewebsites.net"
+  value       = length(azurerm_linux_web_app.app_service) > 0 ? "https://${azurerm_linux_web_app.app_service[0].name}.azurewebsites.net" : null
 }

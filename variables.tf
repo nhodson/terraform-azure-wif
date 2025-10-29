@@ -53,3 +53,9 @@ variable "location" {
   type        = string
   default     = "East US 2"
 }
+
+variable "deploy_app_service" {
+  description = "Whether to deploy the App Service and related components."
+  type        = bool
+  default     = false
+}
