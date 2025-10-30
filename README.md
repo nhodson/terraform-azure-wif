@@ -3,6 +3,7 @@ Implementation of [Workload Identity Federation with Azure](https://cloud.google
 
 ## Architecture
 ![Architecture diagram](./docs/architecture.png)
+**Note:** The architecture diagram shows all possible components. The deployment of the API Management service and the App Service is optional and can be enabled or disabled using variables in your configuration.
 
 ## Configuration
 
@@ -17,6 +18,14 @@ Before running `terraform apply`, you need to set some required variables. The r
 *   `project_prefix`: Unique prefix to apply to created GCP projects
 *   `terraform_service_account`: Terraform service account used for impersonation
 
+### Optional Variables
+*   `deploy_api_management`: (Default: `false`) Set to `true` to deploy the Azure API Management service.
+*   `deploy_app_service`: (Default: `false`) Set to `true` to deploy the Azure App Service.
+*   `gcp_region`: (Default: `us-central1`) The GCP region for resources.
+*   `location`: (Default: `East US 2`) The Azure region for resources.
+*   `app_name`: (Default: `gemini-chat-app`) The name of the App Service application.
+
+
 Create a `terraform.tfvars` file with the following content, replacing the placeholder values:
 
 ```hcl
@@ -26,9 +35,13 @@ org_id                    = "YOUR_GCP_ORG_ID"
 billing_account_id        = "YOUR_GCP_BILLING_ID"
 project_prefix            = "YOUR_GCP_PROJECT_PREFIX"
 terraform_service_account = "YOUR_TERRAFORM_SERVICE_ACCOUNT"
+
+# Optional: Enable API Management and/or App Service
+# deploy_api_management   = true
+# deploy_app_service      = true
 ```
 
-Alternatively, you can provide variables using environment variables prefixed with `TF_VAR_`. For example: `export TF_VAR_azure_tenant_id="YOUR_AZURE_TENANT_ID"`.
+Alternatively, you can provide variables using environment variables prefixed with `TF_VAR_`. For example: `export TF_VAR_tenant_id="YOUR_AZURE_TENANT_ID"`.
 
 ## Apply Terraform
 The Terraform configuration creates:
@@ -36,6 +49,8 @@ The Terraform configuration creates:
 - GCP project for accessing Gemini via Vertex AI
 - Entra ID application and service principal
 - Workload identity pool and provider
+- **(Optional)** Azure API Management service to proxy requests to Vertex AI.
+- **(Optional)** Azure App Service application to demonstrate calling Vertex AI.
 
 1. Initialize Terraform:
     ```
@@ -49,8 +64,34 @@ The Terraform configuration creates:
     ```
     This command creates or updates resources according to your Terraform configuration. You will be prompted to confirm the actions before they are executed.
 
+## Using with Azure API Management
+If you have deployed the API Management service (`deploy_api_management = true`), you can use it to proxy requests to the Vertex AI API. This provides a single endpoint for your applications and can be used to cache authentication tokens.
+
+The API Management endpoint is exposed at `https://<project_prefix>-apim.azure-api.net/vertex-ai`. To call the `generateContent` endpoint, you will need a subscription key. You can find the subscription key in the Azure portal under your API Management instance.
+
+Here is an example of how to call the API using `curl`:
+```bash
+curl -X POST \
+  "https://<project_prefix>-apim.azure-api.net/vertex-ai/v1/projects/<gemini_project_id>/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent" \
+  -H "Host: <project_prefix>-apim.azure-api.net" \
+  -H "Ocp-Apim-Subscription-Key: <YOUR_SUBSCRIPTION_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Tell me a fun fact about space."
+          }
+        ]
+      }
+    ]
+  }'
+```
+
 ## Using with Azure App Service
-The Terraform deploys an Azure App Service application that demonstrates how to call Vertex AI using the Google Gen AI SDK with credentials obtained through workload identity federation.
+If you have deployed the App Service (`deploy_app_service = true`), the Terraform deploys an Azure App Service application that demonstrates how to call Vertex AI using the Google Gen AI SDK with credentials obtained through workload identity federation.
 
 **NOTE:** When running on Azure App Service your credential config will differ as it must dynamically obtain the identity URL from [environment variables](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity?tabs=portal%2Cpython#rest-endpoint-reference) for `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`.
 

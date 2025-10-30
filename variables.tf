@@ -48,10 +48,22 @@ variable "app_name" {
   default     = "gemini-chat-app"
 }
 
+variable "gcp_region" {
+  description = "The GCP region to deploy the resources in."
+  type        = string
+  default     = "us-central1"
+}
+
 variable "location" {
   description = "The Azure region to deploy the resources in."
   type        = string
   default     = "East US 2"
+}
+
+variable "deploy_api_management" {
+  description = "Whether to deploy the API Management service and related components."
+  type        = bool
+  default     = false
 }
 
 variable "deploy_app_service" {
