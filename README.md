@@ -67,28 +67,13 @@ The Terraform configuration creates:
 ## Using with Azure API Management
 If you have deployed the API Management service (`deploy_api_management = true`), you can use it to proxy requests to the Vertex AI API. This provides a single endpoint for your applications and can be used to cache authentication tokens.
 
-The API Management endpoint is exposed at `https://<project_prefix>-apim.azure-api.net/vertex-ai`. To call the `generateContent` endpoint, you will need a subscription key. You can find the subscription key in the Azure portal under your API Management instance.
+The API Management endpoint is exposed at `https://<project_prefix>-apim.azure-api.net/vertex-ai`. To call the endpoint, you will need a subscription key. You can find the subscription key in the Azure portal under your API Management instance.
 
-Here is an example of how to call the API using `curl`:
-```bash
-curl -X POST \
-  "https://<project_prefix>-apim.azure-api.net/vertex-ai/v1/projects/<gemini_project_id>/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent" \
-  -H "Host: <project_prefix>-apim.azure-api.net" \
-  -H "Ocp-Apim-Subscription-Key: <YOUR_SUBSCRIPTION_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "contents": [
-      {
-        "role": "user",
-        "parts": [
-          {
-            "text": "Tell me a fun fact about space."
-          }
-        ]
-      }
-    ]
-  }'
-```
+### Testing the API Proxy
+Two examples are provided to demonstrate how to interact with the API Management gateway:
+
+*   **`api-proxy-curl-usage.sh`**: A shell script demonstrating how to make a `curl` request to the API proxy.
+*   **`api-proxy-client-usage.ipynb`**: A Jupyter Notebook demonstrating how to interact with the API Management gateway using the `google-genai` client library.
 
 ## Using with Azure App Service
 If you have deployed the App Service (`deploy_app_service = true`), the Terraform deploys an Azure App Service application that demonstrates how to call Vertex AI using the Google Gen AI SDK with credentials obtained through workload identity federation.

@@ -27,7 +27,7 @@ resource "azurerm_api_management" "api_management" {
   resource_group_name = azurerm_resource_group.api_management[0].name
   publisher_name      = "Your Name"
   publisher_email     = "your-email@example.com"
-  sku_name            = "Consumption_0" # Cache not available on Consumption SKU, must be Developer_1 or higher
+  sku_name            = "Developer_1" # Cache not available on Consumption SKU, must be Developer_1 or higher
 
   identity {
     type = "SystemAssigned"
@@ -45,37 +45,6 @@ resource "azurerm_api_management_api" "vertex_ai" {
   path                = "vertex-ai"
   protocols           = ["https"]
   service_url         = "https://aiplatform.googleapis.com"
-}
-
-# Add the generateContent operation
-resource "azurerm_api_management_api_operation" "generate_content" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api.vertex_ai[0].name
-  api_management_name = azurerm_api_management.api_management[0].name
-  resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "generateContent"
-  display_name        = "generateContent"
-  method              = "POST"
-  url_template        = "/v1/projects/{projectId}/locations/{location}/publishers/google/models/{modelId}:generateContent"
-  description         = "Generate content with multimodal inputs"
-
-  template_parameter {
-    name     = "projectId"
-    type     = "string"
-    required = true
-  }
-
-  template_parameter {
-    name     = "location"
-    type     = "string"
-    required = true
-  }
-
-  template_parameter {
-    name     = "modelId"
-    type     = "string"
-    required = true
-  }
 }
 
 # Add a policy to handle the request to the Vertex AI API
@@ -163,18 +132,87 @@ resource "azurerm_api_management_api_policy" "vertex_ai_policy" {
 XML
 }
 
-resource "azurerm_api_management_api_operation_policy" "generate_content_policy" {
+
+# Add a generic operation for GET requests to handle operations.get
+resource "azurerm_api_management_api_operation" "get" {
   count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.generate_content[0].api_name
-  api_management_name = azurerm_api_management_api_operation.generate_content[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.generate_content[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.generate_content[0].operation_id
+  api_name            = azurerm_api_management_api.vertex_ai[0].name
+  api_management_name = azurerm_api_management.api_management[0].name
+  resource_group_name = azurerm_resource_group.api_management[0].name
+  operation_id        = "get"
+  display_name        = "GET"
+  method              = "GET"
+  url_template        = "/{*path}"
+  description         = "Generic V1 GET operation for operations"
+
+  template_parameter {
+    name     = "path"
+    type     = "string"
+    required = true
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "get_policy" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api_operation.get[0].api_name
+  api_management_name = azurerm_api_management_api_operation.get[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.get[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.get[0].operation_id
 
   xml_content = <<XML
 <policies>
   <inbound>
     <base />
-    <rewrite-uri template="${azurerm_api_management_api_operation.generate_content[0].url_template}" />
+    <rewrite-uri template="@{
+        return (string)context.Request.MatchedParameters["path"];
+    }" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
+
+# Add a generic operation for POST requests
+resource "azurerm_api_management_api_operation" "post" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api.vertex_ai[0].name
+  api_management_name = azurerm_api_management.api_management[0].name
+  resource_group_name = azurerm_resource_group.api_management[0].name
+  operation_id        = "post"
+  display_name        = "POST"
+  method              = "POST"
+  url_template        = "{*path}"
+  description         = "Generic POST operation for models"
+
+  template_parameter {
+    name     = "path"
+    type     = "string"
+    required = true
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "post_policy" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api_operation.post[0].api_name
+  api_management_name = azurerm_api_management_api_operation.post[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.post[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.post[0].operation_id
+
+  xml_content = <<XML
+<policies>
+  <inbound>
+    <base />
+    <rewrite-uri template="@{
+        return (string)context.Request.MatchedParameters["path"];
+    }" />
   </inbound>
   <backend>
     <base />

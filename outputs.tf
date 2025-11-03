@@ -41,3 +41,8 @@ output "service_app_url" {
   description = "The URL of the Streamlit Gemini Service App"
   value       = length(azurerm_linux_web_app.app_service) > 0 ? "https://${azurerm_linux_web_app.app_service[0].name}.azurewebsites.net" : null
 }
+
+output "api_management_gateway_url" {
+  description = "The URL of the API Management gateway"
+  value       = var.deploy_api_management ? azurerm_api_management.api_management[0].gateway_url : null
+}
