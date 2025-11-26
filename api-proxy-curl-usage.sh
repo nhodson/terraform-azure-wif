@@ -16,7 +16,7 @@ GATEWAY_URL=$(terraform output -raw api_management_gateway_url)
 GCP_PROJECT_ID=$(terraform output -raw gemini_project_id)
 API_KEY="<UPDATE_ME>"
 
-curl -X POST "${GATEWAY_URL}/vertex-ai/v1/projects/${GCP_PROJECT_ID}/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent" \
+curl -X POST "${GATEWAY_URL}/vertex-ai/publishers/google/models/gemini-2.5-flash:generateContent" \
   -H "Ocp-Apim-Subscription-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{ "contents": [ { "role": "user", "parts": [ { "text": "Tell me a joke about space." } ] } ] }'
