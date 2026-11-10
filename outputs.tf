@@ -46,3 +46,34 @@ output "api_management_gateway_url" {
   description = "The URL of the API Management gateway"
   value       = var.deploy_api_management ? azurerm_api_management.api_management[0].gateway_url : null
 }
+
+output "api_management_subscription_key" {
+  description = "The primary subscription key for the Vertex AI API in Azure API Management"
+  sensitive   = true
+  value       = var.deploy_api_management ? azurerm_api_management_subscription.vertex_ai[0].primary_key : null
+}
+
+output "antigravity_admin_settings_json" {
+  description = "Rendered Antigravity admin_settings.json configured from Terraform variables and deployed Azure API Management resources"
+  sensitive   = true
+  value = jsonencode({
+    gateway = {
+      enabled      = true
+      url          = var.deploy_api_management ? "${azurerm_api_management.api_management[0].gateway_url}/vertex-ai" : "https://${var.project_prefix}-apim.azure-api.net/vertex-ai"
+      apiKey       = var.deploy_api_management ? azurerm_api_management_subscription.vertex_ai[0].primary_key : "<YOUR_APIM_SUBSCRIPTION_KEY>"
+      wireProtocol = "genai"
+      customHeaders = {
+        "Ocp-Apim-Subscription-Key" = var.deploy_api_management ? azurerm_api_management_subscription.vertex_ai[0].primary_key : "<YOUR_APIM_SUBSCRIPTION_KEY>"
+        "X-Cost-Center"             = "Platform-Engineering"
+      }
+    }
+    models = {
+      defaultModelId = length(var.allowed_models) > 0 ? var.allowed_models[0] : "gemini-3.8-flash"
+      list = [
+        for model_id in(length(var.allowed_models) > 0 ? var.allowed_models : ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"]) : {
+          modelId = model_id
+        }
+      ]
+    }
+  })
+}

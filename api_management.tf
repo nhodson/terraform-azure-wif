@@ -12,6 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+locals {
+  vertex_ai_service_url = (
+    var.gcp_region == "global" ? "https://aiplatform.googleapis.com" :
+    contains(["us", "eu"], var.gcp_region) ? "https://aiplatform.${var.gcp_region}.rep.googleapis.com" :
+    "https://${var.gcp_region}-aiplatform.googleapis.com"
+  )
+
+  model_inference_policy_xml = <<XML
+<policies>
+  <inbound>
+    <base />
+    <rewrite-uri template="/v1beta1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/publishers/google/models/{model}:{action}" />
+    <set-header name="X-Model-Id" exists-action="override">
+      <value>{model}</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+XML
+}
+
 # Create a resource group for the API Management service
 resource "azurerm_resource_group" "api_management" {
   count    = var.deploy_api_management ? 1 : 0
@@ -44,7 +73,18 @@ resource "azurerm_api_management_api" "vertex_ai" {
   display_name        = "Vertex AI"
   path                = "vertex-ai"
   protocols           = ["https"]
-  service_url         = "https://aiplatform.googleapis.com"
+  service_url         = local.vertex_ai_service_url
+}
+
+# Create a subscription for the Vertex AI API (strip ';rev=...' suffix so APIM scope matches the API)
+resource "azurerm_api_management_subscription" "vertex_ai" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_management_name = azurerm_api_management.api_management[0].name
+  resource_group_name = azurerm_resource_group.api_management[0].name
+  api_id              = replace(azurerm_api_management_api.vertex_ai[0].id, ";rev=${azurerm_api_management_api.vertex_ai[0].revision}", "")
+  display_name        = "Vertex AI API Subscription"
+  state               = "active"
+  allow_tracing       = false
 }
 
 # Add a policy to handle the request to the Vertex AI API
@@ -58,8 +98,45 @@ resource "azurerm_api_management_api_policy" "vertex_ai_policy" {
 <policies>
   <inbound>
     <base />
+    <!-- Optional: Enforce allowed models if var.allowed_models is configured -->
+    <set-variable name="isModelBlocked" value="@{
+        string[] allowedModels = new string[] { ${join(", ", formatlist("\"%s\"", var.allowed_models))} };
+        if (allowedModels.Length > 0) {
+            string requestedModel = null;
+            if (context.Request.MatchedParameters.ContainsKey("model")) {
+                requestedModel = context.Request.MatchedParameters["model"];
+            } else if (context.Operation.Id == "create-interaction" && context.Request.Body != null) {
+                var body = context.Request.Body.As<JObject>(preserveContent: true);
+                requestedModel = body?["model"]?.ToString();
+            }
+            if (!string.IsNullOrEmpty(requestedModel)) {
+                return Array.IndexOf(allowedModels, requestedModel) == -1;
+            }
+        }
+        return false;
+    }" />
+    <choose>
+      <when condition="@((bool)context.Variables["isModelBlocked"])">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+          </set-header>
+          <set-body>@{
+            return new JObject(
+              new JProperty("error", new JObject(
+                new JProperty("code", 403),
+                new JProperty("message", "Requested model is not in the allowed_models list for this gateway."),
+                new JProperty("status", "PERMISSION_DENIED")
+              ))
+            ).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+
     <!-- Try to get the token from cache -->
-    <cache-lookup-value key="stsToken" variable-name="stsToken" />
+    <cache-lookup-value key="stsToken-${module.gemini_project.project_id}-${var.gcp_region}" variable-name="stsToken" />
 
     <!-- If token is not in cache, then obtain it -->
     <choose>
@@ -104,7 +181,7 @@ resource "azurerm_api_management_api_policy" "vertex_ai_policy" {
         }" />
 
         <!-- Store the STS token in the cache for future requests -->
-        <cache-store-value key="stsToken" value="@((string)context.Variables["stsToken"])" duration="@{
+        <cache-store-value key="stsToken-${module.gemini_project.project_id}-${var.gcp_region}" value="@((string)context.Variables["stsToken"])" duration="@{
             var stsResponse = (JObject)context.Variables["stsResponseObject"];
             if (stsResponse != null) {
                 return (int)stsResponse["expires_in"] - 60;
@@ -114,13 +191,18 @@ resource "azurerm_api_management_api_policy" "vertex_ai_policy" {
       </when>
     </choose>
 
-    <!-- Set Authorization header for the backend request -->
+    <!-- Strip APIM subscription key and client API key headers so they are not forwarded upstream -->
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="x-goog-api-key" exists-action="delete" />
+
+    <!-- Set Authorization header for the backend request (User-Agent, X-Goog-Api-Client, and custom X-* attribution headers are preserved) -->
     <set-header name="Authorization" exists-action="override">
       <value>@("Bearer " + (string)context.Variables["stsToken"])</value>
     </set-header>
   </inbound>
   <backend>
-    <forward-request timeout="60" />
+    <!-- Disable response buffering so Server-Sent Events (SSE) flush immediately for Antigravity and SDK streaming -->
+    <forward-request timeout="240" buffer-response="false" />
   </backend>
   <outbound>
     <base />
@@ -132,41 +214,116 @@ resource "azurerm_api_management_api_policy" "vertex_ai_policy" {
 XML
 }
 
-
-# Operation for generateContent
-resource "azurerm_api_management_api_operation" "generate_content" {
+# Operation for SDK collection-scoped model inference (POST /publishers/google/models/{model}:{action})
+resource "azurerm_api_management_api_operation" "sdk_model_inference" {
   count               = var.deploy_api_management ? 1 : 0
   api_name            = azurerm_api_management_api.vertex_ai[0].name
   api_management_name = azurerm_api_management.api_management[0].name
   resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "generate-content"
-  display_name        = "Generate Content"
+  operation_id        = "sdk-model-inference"
+  display_name        = "Model Inference (SDK Collection Scope)"
   method              = "POST"
-  url_template        = "/publishers/google/models/{model}:generateContent"
-  description         = "Generate content using Gemini models"
+  url_template        = "/publishers/google/models/{model}:{action}"
+  description         = "Unary and streaming inference (:generateContent, :streamGenerateContent, :countTokens) for SDK collection scope"
 
   template_parameter {
     name     = "model"
     type     = "string"
     required = true
   }
+
+  template_parameter {
+    name     = "action"
+    type     = "string"
+    required = true
+  }
 }
 
-resource "azurerm_api_management_api_operation_policy" "generate_content_policy" {
+resource "azurerm_api_management_api_operation_policy" "sdk_model_inference_policy" {
   count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.generate_content[0].api_name
-  api_management_name = azurerm_api_management_api_operation.generate_content[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.generate_content[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.generate_content[0].operation_id
+  api_name            = azurerm_api_management_api_operation.sdk_model_inference[0].api_name
+  api_management_name = azurerm_api_management_api_operation.sdk_model_inference[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.sdk_model_inference[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.sdk_model_inference[0].operation_id
+  xml_content         = local.model_inference_policy_xml
+}
+
+# ==============================================================================
+# Versioned & Antigravity Enterprise Gateway Operations (v1, v1beta, v1beta1)
+# https://docs.cloud.google.com/gemini/enterprise/docs/ai-developer-tools/deploy-enterprise-gateway
+# ==============================================================================
+
+# Operation for versioned & Antigravity model inference (POST /{version}/models/{model}:{action})
+resource "azurerm_api_management_api_operation" "versioned_model_inference" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api.vertex_ai[0].name
+  api_management_name = azurerm_api_management.api_management[0].name
+  resource_group_name = azurerm_resource_group.api_management[0].name
+  operation_id        = "versioned-model-inference"
+  display_name        = "Model Inference (Versioned / Antigravity)"
+  method              = "POST"
+  url_template        = "/{version}/models/{model}:{action}"
+  description         = "Unary and streaming inference (:generateContent, :streamGenerateContent, :countTokens) for Antigravity (/v1beta) and versioned callers (v1, v1beta1)"
+
+  template_parameter {
+    name     = "version"
+    type     = "string"
+    required = true
+  }
+
+  template_parameter {
+    name     = "model"
+    type     = "string"
+    required = true
+  }
+
+  template_parameter {
+    name     = "action"
+    type     = "string"
+    required = true
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "versioned_model_inference_policy" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api_operation.versioned_model_inference[0].api_name
+  api_management_name = azurerm_api_management_api_operation.versioned_model_inference[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.versioned_model_inference[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.versioned_model_inference[0].operation_id
+  xml_content         = local.model_inference_policy_xml
+}
+
+# Operation for Interactions API (POST /{version}/interactions, e.g. gemini-omni-1.2-flash video generation)
+resource "azurerm_api_management_api_operation" "create_interaction" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api.vertex_ai[0].name
+  api_management_name = azurerm_api_management.api_management[0].name
+  resource_group_name = azurerm_resource_group.api_management[0].name
+  operation_id        = "create-interaction"
+  display_name        = "Create Interaction (Gemini Omni / Interactions API)"
+  method              = "POST"
+  url_template        = "/{version}/interactions"
+  description         = "Create an interaction using the Interactions API (e.g., gemini-omni-1.2-flash video generation)"
+
+  template_parameter {
+    name     = "version"
+    type     = "string"
+    required = true
+  }
+}
+
+resource "azurerm_api_management_api_operation_policy" "create_interaction_policy" {
+  count               = var.deploy_api_management ? 1 : 0
+  api_name            = azurerm_api_management_api_operation.create_interaction[0].api_name
+  api_management_name = azurerm_api_management_api_operation.create_interaction[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.create_interaction[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.create_interaction[0].operation_id
 
   xml_content = <<XML
 <policies>
   <inbound>
     <base />
-    <rewrite-uri template="/v1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/publishers/google/models/{model}:generateContent" />
-    <set-header name="X-Model-Id" exists-action="override">
-      <value>{model}</value>
-    </set-header>
+    <rewrite-uri template="/v1beta1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/interactions" />
   </inbound>
   <backend>
     <base />
@@ -181,196 +338,48 @@ resource "azurerm_api_management_api_operation_policy" "generate_content_policy"
 XML
 }
 
-# Operation for streamGenerateContent
-resource "azurerm_api_management_api_operation" "stream_generate_content" {
+# Operation to acknowledge Antigravity background telemetry calls (POST /{version}:{action})
+resource "azurerm_api_management_api_operation" "agy_telemetry" {
   count               = var.deploy_api_management ? 1 : 0
   api_name            = azurerm_api_management_api.vertex_ai[0].name
   api_management_name = azurerm_api_management.api_management[0].name
   resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "stream-generate-content"
-  display_name        = "Stream Generate Content"
+  operation_id        = "agy-telemetry"
+  display_name        = "Antigravity Telemetry Acknowledgment"
   method              = "POST"
-  url_template        = "/publishers/google/models/{model}:streamGenerateContent"
-  description         = "Stream generate content using Gemini models"
+  url_template        = "/{version}:{action}"
+  description         = "Acknowledge Antigravity background metric calls (e.g. POST /v1beta:*)"
 
   template_parameter {
-    name     = "model"
+    name     = "version"
+    type     = "string"
+    required = true
+  }
+
+  template_parameter {
+    name     = "action"
     type     = "string"
     required = true
   }
 }
 
-resource "azurerm_api_management_api_operation_policy" "stream_generate_content_policy" {
+resource "azurerm_api_management_api_operation_policy" "agy_telemetry_policy" {
   count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.stream_generate_content[0].api_name
-  api_management_name = azurerm_api_management_api_operation.stream_generate_content[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.stream_generate_content[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.stream_generate_content[0].operation_id
+  api_name            = azurerm_api_management_api_operation.agy_telemetry[0].api_name
+  api_management_name = azurerm_api_management_api_operation.agy_telemetry[0].api_management_name
+  resource_group_name = azurerm_api_management_api_operation.agy_telemetry[0].resource_group_name
+  operation_id        = azurerm_api_management_api_operation.agy_telemetry[0].operation_id
 
   xml_content = <<XML
 <policies>
   <inbound>
-    <base />
-    <rewrite-uri template="/v1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/publishers/google/models/{model}:streamGenerateContent" />
-    <set-header name="X-Model-Id" exists-action="override">
-      <value>{model}</value>
-    </set-header>
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-XML
-}
-
-# Operation for predict (Imagen)
-resource "azurerm_api_management_api_operation" "predict" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api.vertex_ai[0].name
-  api_management_name = azurerm_api_management.api_management[0].name
-  resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "predict"
-  display_name        = "Predict"
-  method              = "POST"
-  url_template        = "/publishers/google/models/{model}:predict"
-  description         = "Predict using Vertex AI models (e.g., Imagen)"
-
-  template_parameter {
-    name     = "model"
-    type     = "string"
-    required = true
-  }
-}
-
-resource "azurerm_api_management_api_operation_policy" "predict_policy" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.predict[0].api_name
-  api_management_name = azurerm_api_management_api_operation.predict[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.predict[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.predict[0].operation_id
-
-  xml_content = <<XML
-<policies>
-  <inbound>
-    <base />
-    <rewrite-uri template="/v1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/publishers/google/models/{model}:predict" />
-    <set-header name="X-Model-Id" exists-action="override">
-      <value>{model}</value>
-    </set-header>
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-XML
-}
-
-# Operation for predictLongRunning (Veo)
-resource "azurerm_api_management_api_operation" "predict_long_running" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api.vertex_ai[0].name
-  api_management_name = azurerm_api_management.api_management[0].name
-  resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "predict-long-running"
-  display_name        = "Predict Long Running"
-  method              = "POST"
-  url_template        = "/publishers/google/models/{model}:predictLongRunning"
-  description         = "Predict Long Running using Vertex AI models (e.g., Veo)"
-
-  template_parameter {
-    name     = "model"
-    type     = "string"
-    required = true
-  }
-}
-
-resource "azurerm_api_management_api_operation_policy" "predict_long_running_policy" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.predict_long_running[0].api_name
-  api_management_name = azurerm_api_management_api_operation.predict_long_running[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.predict_long_running[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.predict_long_running[0].operation_id
-
-  xml_content = <<XML
-<policies>
-  <inbound>
-    <base />
-    <rewrite-uri template="/v1/projects/${module.gemini_project.project_id}/locations/${var.gcp_region}/publishers/google/models/{model}:predictLongRunning" />
-    <set-header name="X-Model-Id" exists-action="override">
-      <value>{model}</value>
-    </set-header>
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-XML
-}
-
-# Operation for fetchPredictOperation (LRO status)
-resource "azurerm_api_management_api_operation" "fetch_predict_operation" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api.vertex_ai[0].name
-  api_management_name = azurerm_api_management.api_management[0].name
-  resource_group_name = azurerm_resource_group.api_management[0].name
-  operation_id        = "fetch-predict-operation"
-  display_name        = "Fetch Predict Operation"
-  method              = "POST"
-  url_template        = "/projects/{project_id}/locations/{location}/publishers/google/models/{model}:fetchPredictOperation"
-  description         = "Get status of long-running predict operations"
-
-  template_parameter {
-    name     = "project_id"
-    type     = "string"
-    required = true
-  }
-
-  template_parameter {
-    name     = "location"
-    type     = "string"
-    required = true
-  }
-
-  template_parameter {
-    name     = "model"
-    type     = "string"
-    required = true
-  }
-}
-
-resource "azurerm_api_management_api_operation_policy" "fetch_predict_operation_policy" {
-  count               = var.deploy_api_management ? 1 : 0
-  api_name            = azurerm_api_management_api_operation.fetch_predict_operation[0].api_name
-  api_management_name = azurerm_api_management_api_operation.fetch_predict_operation[0].api_management_name
-  resource_group_name = azurerm_api_management_api_operation.fetch_predict_operation[0].resource_group_name
-  operation_id        = azurerm_api_management_api_operation.fetch_predict_operation[0].operation_id
-
-  xml_content = <<XML
-<policies>
-  <inbound>
-    <base />
-    <rewrite-uri template="/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:fetchPredictOperation" />
-    <set-header name="X-Model-Id" exists-action="override">
-      <value>{model}</value>
-    </set-header>
+    <return-response>
+      <set-status code="200" reason="OK" />
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-body>{}</set-body>
+    </return-response>
   </inbound>
   <backend>
     <base />

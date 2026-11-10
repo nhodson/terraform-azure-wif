@@ -49,9 +49,15 @@ variable "app_name" {
 }
 
 variable "gcp_region" {
-  description = "The GCP region to deploy the resources in."
+  description = "The GCP location for Vertex AI / Gemini Enterprise Agent Platform endpoints. Supports 'global' (default), multi-regions ('us', 'eu'), or regional endpoints (e.g., 'us-central1')."
   type        = string
-  default     = "us-central1"
+  default     = "global"
+}
+
+variable "allowed_models" {
+  description = "Optional list of allowed model IDs to enforce in the APIM gateway policy (e.g., [\"gemini-4-argon\", \"gemini-3.8-flash\", \"gemini-3.5-flash-lite\"]). When empty, all models are allowed."
+  type        = list(string)
+  default     = []
 }
 
 variable "location" {

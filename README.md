@@ -21,7 +21,8 @@ Before running `terraform apply`, you need to set some required variables. The r
 ### Optional Variables
 *   `deploy_api_management`: (Default: `false`) Set to `true` to deploy the Azure API Management service.
 *   `deploy_app_service`: (Default: `false`) Set to `true` to deploy the Azure App Service.
-*   `gcp_region`: (Default: `us-central1`) The GCP region for resources.
+*   `gcp_region`: (Default: `global`) The GCP location for Vertex AI / Gemini Enterprise Agent Platform endpoints. Supports `global`, multi-regions (`us`, `eu`), or regional endpoints (e.g., `us-central1`).
+*   `allowed_models`: (Default: `[]`) Optional list of allowed model IDs to enforce in the APIM gateway policy (e.g., `["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"]`). When empty, all models are allowed.
 *   `location`: (Default: `East US 2`) The Azure region for resources.
 *   `app_name`: (Default: `gemini-chat-app`) The name of the App Service application.
 
@@ -39,6 +40,8 @@ terraform_service_account = "YOUR_TERRAFORM_SERVICE_ACCOUNT"
 # Optional: Enable API Management and/or App Service
 # deploy_api_management   = true
 # deploy_app_service      = true
+# gcp_region              = "global" # Or "us", "eu", "us-central1"
+# allowed_models          = ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
 ```
 
 Alternatively, you can provide variables using environment variables prefixed with `TF_VAR_`. For example: `export TF_VAR_tenant_id="YOUR_AZURE_TENANT_ID"`.
@@ -65,15 +68,90 @@ The Terraform configuration creates:
     This command creates or updates resources according to your Terraform configuration. You will be prompted to confirm the actions before they are executed.
 
 ## Using with Azure API Management
-If you have deployed the API Management service (`deploy_api_management = true`), you can use it to proxy requests to the Vertex AI API. This provides a single endpoint for your applications and can be used to cache authentication tokens.
+If you have deployed the API Management service (`deploy_api_management = true`), you can use it to proxy requests to the Gemini Enterprise Agent Platform (Vertex AI) API. This provides a single unified endpoint for both the **Google Gen AI SDK** and **Google Antigravity (Enterprise Gateway)** while caching Workload Identity Federation authentication tokens.
 
-The API Management endpoint is exposed at `https://<project_prefix>-apim.azure-api.net/vertex-ai`. To call the endpoint, you will need a subscription key. You can find the subscription key in the Azure portal under your API Management instance.
+The API Management endpoint is exposed at `https://<project_prefix>-apim.azure-api.net/vertex-ai`. To call the endpoint, you will need an APIM subscription key (`Ocp-Apim-Subscription-Key`). You can find the subscription key in the Azure portal under your API Management instance.
 
 ### Testing the API Proxy
 Two examples are provided to demonstrate how to interact with the API Management gateway:
 
-*   **`api-proxy-curl-usage.sh`**: A shell script demonstrating how to make a `curl` request to the API proxy.
+*   **`api-proxy-curl-usage.sh`**: A shell script demonstrating `curl` requests to the API proxy (including standard SDK unary requests, Antigravity streaming SSE requests, and Antigravity telemetry acknowledgment checks).
 *   **`api-proxy-client-usage.ipynb`**: A Jupyter Notebook demonstrating how to interact with the API Management gateway using the `google-genai` client library.
+
+### Connecting Google Antigravity (Enterprise Gateway)
+The Azure API Management configuration in `api_management.tf` satisfies all [Antigravity Enterprise Gateway](https://docs.cloud.google.com/gemini/enterprise/docs/ai-developer-tools/deploy-enterprise-gateway) requirements:
+*   **Header Preservation & Billing Attribution**: Forwards `User-Agent` (`antigravity/VERSION (aidev_client; auth_method=gateway)`), `X-Goog-Api-Client`, and custom `X-*` headers unchanged to Google Cloud while stripping `Ocp-Apim-Subscription-Key` before forwarding upstream.
+*   **Unbuffered SSE Streaming**: Disables response buffering (`buffer-response="false"`) and extends request timeouts (`timeout="240"`) so `:streamGenerateContent?alt=sse` flushes chunks immediately.
+*   **Antigravity Inference & Telemetry Routes**: Supports versioned inference routes (`/{version}/models/{model}:streamGenerateContent` and `/{version}/models/{model}:generateContent` for `v1`, `v1beta`, and `v1beta1`), rewrites them upstream to `/v1beta1/projects/...` on `aiplatform.googleapis.com`, and acknowledges background telemetry calls (`POST /v1beta:*`) with `200 OK` (`{}`).
+
+#### Option 1: Managed Corporate Workstations (`admin_settings.json`)
+A sample [`admin_settings.json`](./admin_settings.json) is included in the root of this repository. You can also generate `admin_settings.json` directly from Terraform outputs—which automatically populates your gateway URL (`project_prefix` / `api_management_gateway_url`), provisioned APIM subscription key (`api_management_subscription_key`), and configured `allowed_models`:
+
+```bash
+terraform output -raw antigravity_admin_settings_json | jq . > admin_settings.json
+```
+
+Deploy `admin_settings.json` to developer workstations via MDM (Intune, Jamf, Ansible):
+*   **Windows**: `%ProgramData%\Antigravity\admin_settings.json`
+*   **macOS**: `/Library/Application Support/Antigravity/admin_settings.json`
+*   **Linux**: `/etc/antigravity/admin_settings.json`
+
+Pass your APIM subscription key in `gateway.customHeaders` as `Ocp-Apim-Subscription-Key`:
+
+```json
+{
+  "gateway": {
+    "enabled": true,
+    "url": "https://<project_prefix>-apim.azure-api.net/vertex-ai",
+    "apiKey": "YOUR_APIM_SUBSCRIPTION_KEY",
+    "wireProtocol": "genai",
+    "customHeaders": {
+      "Ocp-Apim-Subscription-Key": "YOUR_APIM_SUBSCRIPTION_KEY",
+      "X-Cost-Center": "Platform-Engineering"
+    }
+  },
+  "models": {
+    "defaultModelId": "gemini-3.8-flash",
+    "list": [
+      { "modelId": "gemini-4-argon" },
+      { "modelId": "gemini-3.8-flash" },
+      { "modelId": "gemini-3.5-flash-lite" }
+    ]
+  }
+}
+```
+
+#### Option 2: Environment Variables (CLI, VS Code, Containers, Sandboxes)
+Configure Antigravity in interactive shells (`~/.bashrc` / `~/.zshrc`), containers, or CI/CD runners:
+
+```bash
+export AGY_LLM_GATEWAY_URL="https://<project_prefix>-apim.azure-api.net/vertex-ai"
+export AGY_LLM_GATEWAY_API_KEY="YOUR_APIM_SUBSCRIPTION_KEY"
+export AGY_LLM_GATEWAY_WIRE_PROTOCOL="genai"
+export AGY_LLM_GATEWAY_HEADERS="Ocp-Apim-Subscription-Key: YOUR_APIM_SUBSCRIPTION_KEY"
+export AGY_LLM_GATEWAY_MODELS="gemini-4-argon,gemini-3.8-flash,gemini-3.5-flash-lite"
+```
+
+#### Verifying the Antigravity Connection
+1. **Test streaming SSE directly with `curl`**:
+   ```bash
+   curl -N -X POST "https://<project_prefix>-apim.azure-api.net/vertex-ai/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse" \
+     -H "Ocp-Apim-Subscription-Key: YOUR_APIM_SUBSCRIPTION_KEY" \
+     -H "Authorization: Bearer YOUR_APIM_SUBSCRIPTION_KEY" \
+     -H "Content-Type: application/json" \
+     -H "User-Agent: antigravity/1.2.15 (aidev_client; auth_method=gateway)" \
+     -d '{"contents": [{"role": "user", "parts": [{"text": "Reply with PONG"}]}]}'
+   ```
+2. **Test the Antigravity CLI**:
+   ```bash
+   agy -p "Explain binary search in Go"
+   ```
+3. **Verify Attribution in Google Cloud Logging**:
+   In the GCP Console Logs Explorer for the Gemini project, run:
+   ```text
+   resource.type="aiplatform.googleapis.com/Endpoint" OR protoPayload.serviceName="aiplatform.googleapis.com"
+   ```
+   Verify `protoPayload.requestMetadata.callerSuppliedUserAgent` contains `antigravity/VERSION (aidev_client; auth_method=gateway)`.
 
 ## Using with Azure App Service
 If you have deployed the App Service (`deploy_app_service = true`), the Terraform deploys an Azure App Service application that demonstrates how to call Vertex AI using the Google Gen AI SDK with credentials obtained through workload identity federation.

@@ -1,0 +1,26 @@
+{
+  "gateway": {
+    "enabled": true,
+    "url": "https://<project_prefix>-apim.azure-api.net/vertex-ai",
+    "apiKey": "<YOUR_APIM_SUBSCRIPTION_KEY>",
+    "wireProtocol": "genai",
+    "customHeaders": {
+      "Ocp-Apim-Subscription-Key": "<YOUR_APIM_SUBSCRIPTION_KEY>",
+      "X-Cost-Center": "Platform-Engineering"
+    }
+  },
+  "models": {
+    "defaultModelId": "gemini-3.8-flash",
+    "list": [
+      {
+        "modelId": "gemini-4-argon"
+      },
+      {
+        "modelId": "gemini-3.8-flash"
+      },
+      {
+        "modelId": "gemini-3.5-flash-lite"
+      }
+    ]
+  }
+}

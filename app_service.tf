@@ -88,7 +88,7 @@ resource "azurerm_linux_web_app" "app_service" {
     "GOOGLE_APPLICATION_CREDENTIALS"      = "./gcp-cred-config.json"
     "GOOGLE_GENAI_USE_VERTEXAI"           = "true"
     "GOOGLE_CLOUD_PROJECT"                = module.gemini_project.project_id
-    "GOOGLE_CLOUD_LOCATION"               = "global"
+    "GOOGLE_CLOUD_LOCATION"               = var.gcp_region
   }
 
   zip_deploy_file = data.archive_file.app[0].output_path
